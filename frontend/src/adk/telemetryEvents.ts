@@ -13,6 +13,7 @@ import type { SandboxAgentKind } from "./sandbox";
 export type DeploymentTelemetrySource =
   | "scratch"
   | "code_package"
+  | "migration"
   | "feishu_automation"
   | "unknown";
 
@@ -23,6 +24,7 @@ export type DeploymentCreateMode =
   | "workflow"
   | "yaml_import"
   | "code_package"
+  | "migration"
   | "feishu_template"
   | "unknown";
 
