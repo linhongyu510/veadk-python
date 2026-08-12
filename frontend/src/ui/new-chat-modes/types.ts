@@ -7,7 +7,7 @@ export type NewChatMode = "agent" | "temporary";
 
 export type NewChatTask = "ppt" | "image" | "video";
 
-export type NewChatWorkspaceMode = "agent" | "skill" | "video";
+export type NewChatWorkspaceMode = "agent" | "vibe" | "skill" | "video";
 
 export type NewChatSkillAction = "create" | "optimize";
 
