@@ -201,6 +201,8 @@ import { SandboxComposer } from "./ui/SandboxComposer";
 import { sandboxSnapshotTurns } from "./ui/sandboxCommands";
 import { useSandboxCodexCommands } from "./ui/useSandboxCodexCommands";
 import { StudioConfirmDialog } from "./ui/StudioConfirmDialog";
+import { VibeTaskWorkspace } from "./ui/vibe/VibeTaskWorkspace";
+import { vibeClient, type VibeTask } from "./adk/vibe";
 import byteplusLogo from "./assets/byteplus.svg";
 import defaultSiteLogo from "./assets/logo.svg";
 import {
@@ -952,6 +954,18 @@ export default function App() {
   const [newChatSkillTarget, setNewChatSkillTarget] =
     useState<NewChatSkillTarget | null>(null);
   const [newChatTask, setNewChatTask] = useState<NewChatTask | null>(null);
+  const [vibeTasks, setVibeTasks] = useState<VibeTask[]>([]);
+  const [selectedVibeTaskId, setSelectedVibeTaskId] = useState("");
+  const selectedVibeTask = vibeTasks.find((task) => task.taskId === selectedVibeTaskId) ?? null;
+  const updateVibeTask = useCallback((next: VibeTask) => {
+    setVibeTasks((current) => {
+      const index = current.findIndex((task) => task.taskId === next.taskId);
+      if (index < 0) return [next, ...current];
+      const updated = [...current];
+      updated[index] = next;
+      return updated;
+    });
+  }, []);
   const [videoTask, setVideoTask] = useState<VideoGenerationTask | null>(null);
   const [videoTaskDialogOpen, setVideoTaskDialogOpen] = useState(false);
   const videoTaskRef = useRef<VideoGenerationTask | null>(null);
@@ -2165,6 +2179,33 @@ export default function App() {
   useEffect(() => {
     if (localMode && userId) setLocalUser(userId);
   }, [localMode, userId]);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated" || !userId) {
+      setVibeTasks([]);
+      setSelectedVibeTaskId("");
+      return;
+    }
+    const controller = new AbortController();
+    void vibeClient.list(controller.signal)
+      .then((tasks) => {
+        setVibeTasks(tasks);
+        setSelectedVibeTaskId((current) => {
+          if (current && tasks.some((task) => task.taskId === current)) return current;
+          const recoverable = tasks.find(
+            (task) => !["completed", "partial", "blocked", "failed", "cancelled", "expired"].includes(task.state),
+          );
+          return recoverable?.taskId ?? "";
+        });
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+;
+    return () => controller.abort();
+  }, [authStatus, userId]);
 
   useEffect(() => {
     if (authStatus !== "authenticated" || !userId) {
@@ -3455,6 +3496,7 @@ export default function App() {
 
   function openNewChat() {
     setPlatformFeedbackOrigin(null);
+    setSelectedVibeTaskId("");
     setCreateView(null);
     setSkillCenter(false);
     setSkillCenterLaunch(null);
@@ -4896,12 +4938,11 @@ export default function App() {
                   void (async () => {
                     setError("");
                     try {
-                      const { vibeClient } = await import("./adk/vibe");
                       const task = await vibeClient.create(text.trim());
+                      updateVibeTask(task);
+                      setSelectedVibeTaskId(task.taskId);
                       setInput("");
-                      setError(
-                        `Vibe Task ${task.taskId} 已创建。正在准备 8H Dev Sandbox。`,
-                      );
+                      setError("");
                     } catch (error) {
                       setError(
                         error instanceof Error ? error.message : "Vibe Task 创建失败",
@@ -5485,6 +5526,18 @@ export default function App() {
                 onDeploymentStarted={startDeployment}
                 onDeploymentComplete={finishDeployment}
                 initialDeployRegion={newRuntimeRegion}
+              />
+            ) : selectedVibeTask ? (
+              <VibeTaskWorkspace
+                task={selectedVibeTask}
+                tasks={vibeTasks}
+                onSelectTask={(task) => setSelectedVibeTaskId(task.taskId)}
+                onTaskChange={updateVibeTask}
+                onDeleted={(taskId) => {
+                  setVibeTasks((current) => current.filter((task) => task.taskId !== taskId));
+                  setSelectedVibeTaskId("");
+                  setNewChatWorkspaceMode("vibe");
+                }}
               />
             ) : turns.length === 0 && !newChatCapabilitiesReady ? (
               <div className="session-loading">
