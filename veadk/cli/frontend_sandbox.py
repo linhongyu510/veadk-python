@@ -24,7 +24,7 @@ import re
 import secrets
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Protocol
 
@@ -35,11 +35,14 @@ from frontend.server.sandbox.tool_sessions import SandboxToolPair
 from veadk.cli.agentkit_sandbox_region import is_agentkit_resource_not_found
 from veadk.cli.agentkit_session_metadata import (
     SESSION_DISPLAY_NAME_MAX_LENGTH,
+    SESSION_SCHEMA_VERSION_METADATA_KEY,
+    SESSION_WORKLOAD_METADATA_KEY,
     build_create_session_request,
     build_list_sessions_request,
     call_session_client,
     session_creator_name,
     session_display_name,
+    session_metadata_value,
     session_username,
 )
 from veadk.cli.codex_app_server import (
@@ -242,6 +245,8 @@ class SandboxCloudSession:
     display_name: str = ""
     created_by: str = ""
     creator_name: str = ""
+    workload: str = ""
+    schema_version: str = ""
     persistent: bool = False
 
 
@@ -471,6 +476,11 @@ class SandboxCloudGateway(Protocol):
         display_name: str = "",
         username: str = "",
         creator_name: str = "",
+        *,
+        user_session_id: str | None = None,
+        ttl_seconds: int | None = None,
+        envs: Mapping[str, str] | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> SandboxCloudSession:
         """Create a fresh remote Sandbox session."""
         raise NotImplementedError
@@ -534,6 +544,25 @@ class AgentkitSandboxGateway:
             request,
         )
 
+    @staticmethod
+    def _string_mapping(
+        value: Mapping[str, str] | None,
+        *,
+        name: str,
+    ) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{name} must be a mapping of strings to strings")
+        result: dict[str, str] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"{name} keys must be non-empty strings")
+            if not isinstance(item, str):
+                raise ValueError(f"{name} values must be strings")
+            result[key] = item
+        return result
+
     async def _reconcile_created_session(
         self, tool_id: str, user_session_id: str, region: str = ""
     ) -> SandboxCloudSession | None:
@@ -595,6 +624,10 @@ class AgentkitSandboxGateway:
             display_name=session_display_name(value),
             created_by=session_username(value),
             creator_name=session_creator_name(value),
+            workload=session_metadata_value(value, SESSION_WORKLOAD_METADATA_KEY),
+            schema_version=session_metadata_value(
+                value, SESSION_SCHEMA_VERSION_METADATA_KEY
+            ),
         )
 
     @staticmethod
@@ -761,18 +794,47 @@ class AgentkitSandboxGateway:
         display_name: str = "",
         username: str = "",
         creator_name: str = "",
+        *,
+        user_session_id: str | None = None,
+        ttl_seconds: int | None = None,
+        envs: Mapping[str, str] | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> SandboxCloudSession:
-        user_session_id = _build_studio_user_session_id()
+        from agentkit.sdk.tools import types as tools_types
+
+        if user_session_id is None:
+            user_session_id = _build_studio_user_session_id()
+        elif not isinstance(user_session_id, str) or not user_session_id.strip():
+            raise ValueError("user_session_id must be a non-empty string")
+        else:
+            user_session_id = user_session_id.strip()
+        if ttl_seconds is None:
+            ttl_seconds = STUDIO_SANDBOX_TTL_SECONDS
+        elif (
+            not isinstance(ttl_seconds, int)
+            or isinstance(ttl_seconds, bool)
+            or ttl_seconds <= 0
+        ):
+            raise ValueError("ttl_seconds must be a positive integer")
+
+        safe_envs = self._string_mapping(envs, name="envs")
+        safe_metadata = self._string_mapping(metadata, name="metadata")
         regions = self._region_candidates or ("",)
         for index, region in enumerate(regions):
             request = build_create_session_request(
                 tool_id=tool_id,
-                ttl_seconds=STUDIO_SANDBOX_TTL_SECONDS,
+                ttl_seconds=ttl_seconds,
                 user_session_id=user_session_id,
                 display_name=display_name,
                 username=username,
                 creator_name=creator_name,
+                extra_metadata=safe_metadata,
             )
+            if safe_envs:
+                request.envs = [
+                    tools_types.EnvsItemForCreateSession(Key=key, Value=value)
+                    for key, value in safe_envs.items()
+                ]
             create_task = asyncio.create_task(
                 self._call("create_session", request, region=region)
             )
@@ -818,6 +880,10 @@ class AgentkitSandboxGateway:
                 display_name=display_name,
                 created_by=username,
                 creator_name=creator_name,
+                workload=safe_metadata.get(SESSION_WORKLOAD_METADATA_KEY, ""),
+                schema_version=safe_metadata.get(
+                    SESSION_SCHEMA_VERSION_METADATA_KEY, ""
+                ),
             )
         raise SandboxProvisioningError("无法在支持的地域创建 AgentKit 沙箱会话。")
 

@@ -25,6 +25,8 @@ SESSION_DISPLAY_NAME_MAX_LENGTH = 40
 SESSION_DISPLAY_NAME_METADATA_KEY = "veadk_display_name"
 SESSION_CREATOR_NAME_METADATA_KEY = "veadk_creator_name"
 SESSION_USERNAME_METADATA_KEY = "Username"
+SESSION_WORKLOAD_METADATA_KEY = "veadk_workload"
+SESSION_SCHEMA_VERSION_METADATA_KEY = "veadk_schema_version"
 
 
 class _SessionMetadata(tools_types.ToolsBaseModel):
@@ -78,6 +80,7 @@ def build_create_session_request(
     display_name: str,
     username: str = "",
     creator_name: str = "",
+    extra_metadata: dict[str, str] | None = None,
 ) -> Any:
     """Build a native or compatibility CreateSession request."""
     metadata = []
@@ -105,6 +108,15 @@ def build_create_session_request(
                 Value=creator_name,
             )
         )
+    reserved = {
+        SESSION_DISPLAY_NAME_METADATA_KEY,
+        SESSION_USERNAME_METADATA_KEY,
+        SESSION_CREATOR_NAME_METADATA_KEY,
+    }
+    for key, value in sorted((extra_metadata or {}).items()):
+        if key in reserved or not key or len(key) > 64 or len(value) > 256:
+            raise ValueError("invalid extra Session metadata")
+        metadata.append(_SessionMetadata(Key=key, Type="String", Value=value))
     request_type: Any = tools_types.CreateSessionRequest
     if metadata and not _model_supports_alias(request_type, "Metadata"):
         request_type = _CreateSessionRequestCompat
@@ -208,6 +220,23 @@ def session_username(value: Any) -> str:
             username = getattr(item, "value", "")
         if key == SESSION_USERNAME_METADATA_KEY and isinstance(username, str):
             return username.strip()
+    return ""
+
+
+def session_metadata_value(value: Any, expected_key: str) -> str:
+    """Extract one bounded metadata value from a Session response."""
+    metadata = getattr(value, "metadata", None)
+    if not isinstance(metadata, (list, tuple)):
+        return ""
+    for item in metadata:
+        if isinstance(item, dict):
+            key = item.get("key") or item.get("Key")
+            item_value = item.get("value") or item.get("Value")
+        else:
+            key = getattr(item, "key", "")
+            item_value = getattr(item, "value", "")
+        if key == expected_key and isinstance(item_value, str):
+            return item_value.strip()[:256]
     return ""
 
 
